@@ -1,0 +1,143 @@
+services:
+  db:
+    hostname: pgvector_db
+    container_name: pgvector_db_container
+    image: ankane/pgvector
+    ports:
+      - '5432:5432'
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    volumes:
+      - ./local_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin4_container
+    restart: unless-stopped
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    user: "$UID:$GID"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - ./pgadmin-data:/var/lib/pgadmin
+
+  ollama-llm:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - app-network
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_PORT=11434
+    healthcheck:
+      test: "ollama --version && ollama ps || exit 1"
+      interval: 5s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [ "gpu" ]
+  llamafactory:
+    build:
+      dockerfile: ./docker/docker-cuda/Dockerfile
+      context: ../LLaMA-Factory
+      args:
+        INSTALL_BNB: "false"
+        INSTALL_VLLM: "false"
+        INSTALL_DEEPSPEED: "false"
+        INSTALL_FLASHATTN: "false"
+        INSTALL_LIGER_KERNEL: "false"
+        INSTALL_HQQ: "false"
+        INSTALL_EETQ: "false"
+        PIP_INDEX: https://pypi.org/simple
+    container_name: llamafactory
+    volumes:
+      - ../LLaMA-Factory/hf_cache:/root/.cache/huggingface
+      - ../LLaMA-Factory/ms_cache:/root/.cache/modelscope
+      - ../LLaMA-Factory/om_cache:/root/.cache/openmind
+      - ../LLaMA-Factory/data:/app/data
+      - ../LLaMA-Factory/output:/app/output
+    ports:
+      - "7860:7860"
+      - "8000:8000"
+    ipc: host
+    tty: true
+    shm_size: "16gb"
+    stdin_open: true
+    command: bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: "all"
+              capabilities: [ gpu ]
+    restart: unless-stopped
+
+#  prepare-models:
+#    image: ollama/ollama:latest
+#    depends_on:
+#      - ollama-llm
+#    volumes:
+#      - ollama_data:/root/.ollama
+#    environment:
+#      - OLLAMA_HOST=http://ollama-llm:11434
+#    networks:
+#      - app-network
+#    entrypoint: >
+#      sh -c "
+#        echo 'Waiting for Ollama server to start...' &&
+#        sleep 10 &&
+#        echo 'Pulling mistral...' &&
+#        ollama pull mistral &&
+#      echo 'Pulling embedding model...' &&
+#      ollama pull nomic-embed-text &&
+#        echo 'Model preparation complete.'"
+
+  prometheus:
+    image: prom/prometheus:v2.44.0
+    depends_on:
+      - ollama-llm
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    depends_on:
+      - ollama-llm
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+
+  postgres_data:
+
+  ollama_data:
